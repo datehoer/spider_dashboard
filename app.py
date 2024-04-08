@@ -14,7 +14,9 @@ class LifespanHandler:
     async def on_startup(self):
         global playwright, browser
         playwright = await async_playwright().start()
-        browser = await playwright.chromium.launch(headless=False)
+        # browser = await playwright.chromium.launch(headless=False)
+        # 如果使用代理的话,就没法在不使用代理的情况下创建浏览器了
+        browser = await playwright.chromium.launch(headless=False, proxy={"server": "http://per-context"})
 
     async def on_shutdown(self):
         await browser.close()
@@ -27,8 +29,17 @@ app.add_event_handler("shutdown", handler.on_shutdown)
 
 
 @app.post("/create_page/")
-async def create_new_page():
-    context = await browser.new_context()
+async def create_new_page(proxy_server: str = "", proxy_username: str = "", proxy_password: str = ""):
+    proxy_config = {}
+    if proxy_server:
+        proxy_config['server'] = proxy_server
+        if proxy_username and proxy_password:
+            proxy_config['username'] = proxy_username
+            proxy_config['password'] = proxy_password
+    context_options = {}
+    if proxy_config:
+        context_options['proxy'] = proxy_config
+    context = await browser.new_context(**context_options)
     page = await context.new_page()
     await stealth_async(page)
     page_id = len(pages)
@@ -88,14 +99,29 @@ async def use_page(page_id: int, tab_id: int, action: str, url: str = "", select
 
 
 @app.delete("/close_tab/{page_id}/{tab_id}")
-async def close_tab(page_id: int, tab_id: int):
-    if page_id not in pages or tab_id >= len(pages[page_id]):
-        raise HTTPException(status_code=404, detail="Tab not found")
+async def close_specific_tab(page_id: int, tab_id: int):
+    if page_id not in pages or tab_id < 0 or tab_id >= len(pages[page_id]):
+        raise HTTPException(status_code=404, detail="Page or tab not found")
+
     await pages[page_id][tab_id].close()
     pages[page_id].pop(tab_id)
+
     if not pages[page_id]:
         pages.pop(page_id)
+
     return {"message": "Tab closed"}
+
+
+@app.delete("/close_page/{page_id}")
+async def close_page(page_id: int):
+    if page_id not in pages:
+        raise HTTPException(status_code=404, detail="Page not found")
+
+    for tab in pages[page_id]:
+        await tab.close()
+    pages.pop(page_id)
+
+    return {"message": "Page and all its tabs closed"}
 
 
 @app.get("/get_pages/")
