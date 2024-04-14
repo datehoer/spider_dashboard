@@ -1,13 +1,14 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import JSONResponse
 from playwright.async_api import async_playwright
 from playwright_stealth import stealth_async
+from add_script import context_add_init_script
 import uvicorn
 
 app = FastAPI()
 playwright = None
 browser = None
-pages = {}  # 使用字典存储页面ID及其下的标签页列表
+pages = {}
 
 
 class LifespanHandler:
@@ -16,7 +17,7 @@ class LifespanHandler:
         playwright = await async_playwright().start()
         # browser = await playwright.chromium.launch(headless=False)
         # 如果使用代理的话,就没法在不使用代理的情况下创建浏览器了
-        browser = await playwright.chromium.launch(headless=False, proxy={"server": "http://per-context"})
+        browser = await playwright.chromium.launch(headless=True, proxy={"server": "http://per-context"})
 
     async def on_shutdown(self):
         await browser.close()
@@ -39,7 +40,11 @@ async def create_new_page(proxy_server: str = "", proxy_username: str = "", prox
     context_options = {}
     if proxy_config:
         context_options['proxy'] = proxy_config
-    context = await browser.new_context(**context_options)
+    context_options['user_agent'] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+    context_options['width'] = 1920
+    context_options['height'] = 1080
+    context_options['languages'] = ['en-US', 'en']
+    context = await context_add_init_script(browser, context_options)
     page = await context.new_page()
     await stealth_async(page)
     page_id = len(pages)
@@ -59,11 +64,39 @@ async def create_new_tab(page_id: int):
 
 
 @app.post("/use_page/{page_id}/{tab_id}")
-async def use_page(page_id: int, tab_id: int, action: str, url: str = "", selector: str = "", nums: int = 0, height: int = 100):
+async def use_page(page_id, tab_id, action, url: str = "", selector: str = "", nums=0, height=100, timeout=30000):
+    example = {
+        "0": {
+            "action": "route",
+            "url": "https://www.baidu.com"
+        },
+        "1": {
+            "action": "scroll_to_bottom",
+            "nums": 0,
+            "height": 100
+        },
+        "2": {
+            "action": "select_data",
+            "selector": "div",
+            "data": "text"
+        },
+        "3": {
+            "action": "source",
+        },
+        "4": {
+            "action": "pdf"
+        },
+        "5": {
+            "action": "click_next_page",
+            "selector": ".next"
+        }
+
+    }
     if page_id not in pages or tab_id >= len(pages[page_id]):
         raise HTTPException(status_code=404, detail="Tab not found")
     page = pages[page_id][tab_id]
-    await page.goto(url)
+    await page.goto(url, timeout=timeout)
+    actions = ["scroll_to_bottom", "select_data", "screenshot", "pdf", 'route']
     if action == "scroll_to_bottom":
         await page.evaluate("""
             async ({nums, height}) => {
@@ -94,6 +127,10 @@ async def use_page(page_id: int, tab_id: int, action: str, url: str = "", select
     elif action == "select_data":
         elements = await page.query_selector_all(selector)
         return JSONResponse(content=[await element.text_content() for element in elements])
+    elif action == "screenshot":
+        return Response(content=await page.screenshot(), media_type="image/png")
+    elif action == "pdf":
+        return Response(content=await page.pdf(), media_type="application/pdf")
     else:
         raise HTTPException(status_code=400, detail="Invalid action")
 
