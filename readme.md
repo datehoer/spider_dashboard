@@ -79,4 +79,49 @@ uvicorn app:app --reload --host 0.0.0.0 --port 8000
 - 此示例默认在非无头模式下启动Chromium浏览器，可根据需要调整。
 - 如果使用代理则无法使用不加代理的浏览器访问页面,创建页面时必须要加代理。
 
+## 动作示例
+~~~
+example = {
+        "0": {
+            "action": "route",
+            "url": "https://www.baidu.com",
+            "timeout": 30000
+        },
+        "1": {
+            "action": "scroll_to_bottom",
+            "nums": 0,
+            "height": 100
+        },
+        "2": {
+            "action": "select_data",
+            "selector": "div",
+            "data": "text"
+        },
+        "3": {
+            "action": "source",
+            "data": "html"
+        },
+        "4": {
+            "action": "pdf"
+        },
+        "5": {
+            "action": "click_next_page",
+            "selector": ".next"
+        },
+        "6": {
+            "action": "gne_html",
+            "params": {
+                "title_xpath": "",
+                "host": ""
+                "author_xpath": "",
+                "publish_time_xpath": "",
+                "body_xpath": "",
+                "noise_node_list": "",  // 去除节点列表xpath ['//div[@class="comment-list"]']
+                "with_body_html": "False",
+                "use_visible_info": "False"
+            }
+        },
+    }
+~~~
+
 ---

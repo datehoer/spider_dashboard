@@ -1,25 +1,31 @@
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, Response
 from fastapi.responses import JSONResponse
 from playwright.async_api import async_playwright
 from playwright_stealth import stealth_async
 from add_script import context_add_init_script
+from tools import Tools
 import uvicorn
 
 app = FastAPI()
+tools = Tools()
 playwright = None
 browser = None
 pages = {}
+BASE_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+           "Chrome/123.0.0.0 Safari/537.36")
 
 
 class LifespanHandler:
-    async def on_startup(self):
+    @staticmethod
+    async def on_startup():
         global playwright, browser
         playwright = await async_playwright().start()
         # browser = await playwright.chromium.launch(headless=False)
         # 如果使用代理的话,就没法在不使用代理的情况下创建浏览器了
         browser = await playwright.chromium.launch(headless=True, proxy={"server": "http://per-context"})
 
-    async def on_shutdown(self):
+    @staticmethod
+    async def on_shutdown():
         await browser.close()
         await playwright.stop()
 
@@ -40,7 +46,7 @@ async def create_new_page(proxy_server: str = "", proxy_username: str = "", prox
     context_options = {}
     if proxy_config:
         context_options['proxy'] = proxy_config
-    context_options['user_agent'] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+    context_options['user_agent'] = BASE_UA
     context_options['width'] = 1920
     context_options['height'] = 1080
     context_options['languages'] = ['en-US', 'en']
@@ -55,7 +61,7 @@ async def create_new_page(proxy_server: str = "", proxy_username: str = "", prox
 @app.post("/create_tab/{page_id}")
 async def create_new_tab(page_id: int):
     if page_id not in pages:
-        raise HTTPException(status_code=404, detail="Page not found")
+        return Response(content={"message": "Page not found"}, status_code=404)
     context = pages[page_id][0].context
     new_page = await context.new_page()
     tab_id = len(pages[page_id])
@@ -64,85 +70,98 @@ async def create_new_tab(page_id: int):
 
 
 @app.post("/use_page/{page_id}/{tab_id}")
-async def use_page(page_id, tab_id, action, url: str = "", selector: str = "", nums=0, height=100, timeout=30000):
-    example = {
-        "0": {
-            "action": "route",
-            "url": "https://www.baidu.com"
-        },
-        "1": {
-            "action": "scroll_to_bottom",
-            "nums": 0,
-            "height": 100
-        },
-        "2": {
-            "action": "select_data",
-            "selector": "div",
-            "data": "text"
-        },
-        "3": {
-            "action": "source",
-        },
-        "4": {
-            "action": "pdf"
-        },
-        "5": {
-            "action": "click_next_page",
-            "selector": ".next"
-        }
-
-    }
+async def use_page(actions: dict, page_id: int, tab_id: int):
     if page_id not in pages or tab_id >= len(pages[page_id]):
-        raise HTTPException(status_code=404, detail="Tab not found")
+        return Response(content={"message": "Page or tab not found"}, status_code=404)
     page = pages[page_id][tab_id]
-    await page.goto(url, timeout=timeout)
-    actions = ["scroll_to_bottom", "select_data", "screenshot", "pdf", 'route']
-    if action == "scroll_to_bottom":
-        await page.evaluate("""
-            async ({nums, height}) => {
-                await new Promise((resolve, reject) => {
-                    var totalHeight = 0;
-                    var num = 0;
-                    var distance = height;
-                    var numss = nums;
-                    var timer = setInterval(() => {
-                        var scrollHeight = document.body.scrollHeight;
-                        window.scrollBy(0, distance);
-                        totalHeight += distance;
-                        if(totalHeight >= scrollHeight){
-                            clearInterval(timer);
-                            resolve("ok");
-                        }
-                        if(num > numss*2){
-                            clearInterval(timer);
-                            resolve("ok");
-                        }else{
-                            num = num + 1;
-                        }
-                    }, 1000);
-                });
-            }
-            """, {"nums": nums, "height": height})
-        return JSONResponse(content=await page.content())
-    elif action == "select_data":
-        elements = await page.query_selector_all(selector)
-        return JSONResponse(content=[await element.text_content() for element in elements])
-    elif action == "screenshot":
-        return Response(content=await page.screenshot(), media_type="image/png")
-    elif action == "pdf":
-        return Response(content=await page.pdf(), media_type="application/pdf")
-    else:
-        raise HTTPException(status_code=400, detail="Invalid action")
+    if actions["0"]['action'] != "route":
+        return Response(content={"message": "First action must be route"}, status_code=400)
+    return_data = {
+        "data": ""
+    }
+    for item in actions.keys():
+        action = actions[item]
+        if action["action"] == "route":
+            await page.goto(action["url"], timeout=action.get("timeout", 30000))
+        elif action["action"] == "scroll_to_bottom":
+            await page.evaluate("""
+                async ({nums, height}) => {
+                    await new Promise((resolve, reject) => {
+                        var totalHeight = 0;
+                        var num = 0;
+                        var distance = height;
+                        var numss = nums;
+                        var timer = setInterval(() => {
+                            var scrollHeight = document.body.scrollHeight;
+                            window.scrollBy(0, distance);
+                            totalHeight += distance;
+                            if(totalHeight >= scrollHeight){
+                                clearInterval(timer);
+                                resolve("ok");
+                            }
+                            if(num > numss*2){
+                                clearInterval(timer);
+                                resolve("ok");
+                            }else{
+                                num = num + 1;
+                            }
+                        }, 1000);
+                    });
+                }
+                """, {"nums": action["nums"], "height": action["height"]})
+        elif action["action"] == "select_data":
+            elements = await page.query_selector_all(action["selector"])
+            data = [await element.text_content() for element in elements]
+            return_data['data'] = data
+        elif action["action"] == "source":
+            if action['data'] == "html":
+                data = await page.content()
+            elif action['data'] == "text":
+                data = await page.text()
+            else:
+                data = await page.content()
+            return_data['data'] = data
+        elif action["action"] == "pdf":
+            page_pdf = await page.pdf()
+            return Response(content=page_pdf, media_type="application/pdf")
+        elif action["action"] == "click_next_page":
+            await page.click(action["selector"])
+        elif action["action"] == "gne_html":
+            if action.get("html"):
+                html = action["html"]
+            else:
+                html = await page.content()
+            data = tools.extract_news_text(html, **action["params"])
+            return_data['data'] = data
+            return_data['message'] = ("gne maybe not work well, please check the result."
+                                      "pls add noise_node_list if needed to remove noise nodes,"
+                                      "or add xpath selector for author_xpath, body_xpath ...")
+        elif action["action"] == "gne_list":
+            if action.get("html"):
+                html = action["html"]
+            else:
+                html = await page.content()
+            data = tools.extract_list_page(html, action["feature"])
+            return_data['data'] = data
+            return_data['message'] = "gne maybe not work well, please check the result"
+        elif action["action"] == "remove_tags":
+            if action.get("html"):
+                html = action["html"]
+            else:
+                html = await page.content()
+            data = tools.remove_tags(html)
+            return_data['data'] = data
+        else:
+            return_data['message'] = "Action not found"
+    return JSONResponse(content=return_data)
 
 
 @app.delete("/close_tab/{page_id}/{tab_id}")
 async def close_specific_tab(page_id: int, tab_id: int):
     if page_id not in pages or tab_id < 0 or tab_id >= len(pages[page_id]):
-        raise HTTPException(status_code=404, detail="Page or tab not found")
-
+        return Response(content={"message": "Page or tab not found"}, status_code=404)
     await pages[page_id][tab_id].close()
     pages[page_id].pop(tab_id)
-
     if not pages[page_id]:
         pages.pop(page_id)
 
@@ -152,13 +171,20 @@ async def close_specific_tab(page_id: int, tab_id: int):
 @app.delete("/close_page/{page_id}")
 async def close_page(page_id: int):
     if page_id not in pages:
-        raise HTTPException(status_code=404, detail="Page not found")
-
+        return Response(content={"message": "Page not found"}, status_code=404)
     for tab in pages[page_id]:
         await tab.close()
     pages.pop(page_id)
-
     return {"message": "Page and all its tabs closed"}
+
+
+@app.delete("/close_all_pages/")
+async def close_all_pages():
+    for page_id, tabs in pages.items():
+        for tab in tabs:
+            await tab.close()
+    pages.clear()
+    return {"message": "All pages and tabs closed"}
 
 
 @app.get("/get_pages/")
